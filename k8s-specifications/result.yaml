@@ -1,0 +1,40 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: result
+  name: result-deploy
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: result
+  template:
+    metadata:
+      labels:
+        app: result
+    spec:
+      containers:
+      - image: 440744256620.dkr.ecr.us-east-2.amazonaws.com/voting-app-result:latest
+        name: result
+        ports:
+        - containerPort: 80
+          name: result
+
+---
+
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app: result
+  name: result
+spec:
+  type: NodePort
+  ports:
+  - name: "result-service"
+    port: 8081
+    targetPort: 80
+    nodePort: 31001
+  selector:
+    app: result

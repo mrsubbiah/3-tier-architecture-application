@@ -1,0 +1,141 @@
+name: Build, Push Docker Images and Deploy to AWS EKS
+
+on:
+  push:
+    branches:
+      - 'main'
+    paths:
+      - 'result/**'
+      - 'vote/**'
+      - 'worker/**'
+      - '.github/workflows/*'
+      - 'AWSEKS/**'
+  pull_request:
+    branches:
+      - 'main'
+    paths:
+      - 'result/**'
+      - 'vote/**'
+      - 'worker/**'
+      - '.github/workflows/*'
+
+jobs:
+  # Job for Building and Pushing Docker Images for all services
+  build_and_push_images:
+    name: Build and Push Docker Images to AWS ECR
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      packages: write  # Needed to push docker images to ECR
+      pull-requests: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Log in to Amazon ECR
+        run: |
+          aws ecr get-login-password --region ${{ secrets.AWS_REGION }} | docker login --username AWS --password-stdin ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com
+
+      - name: Build and Push Result Docker image to AWS ECR
+        run: |
+          docker build -t ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/${{ secrets.AWS_ECR_REPOSITORY_RESULT }}:latest ./result
+          docker push ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/${{ secrets.AWS_ECR_REPOSITORY_RESULT }}:latest
+
+      - name: Build and Push Vote Docker image to AWS ECR
+        run: |
+          docker build -t ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/${{ secrets.AWS_ECR_REPOSITORY_VOTE }}:latest ./vote
+          docker push ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/${{ secrets.AWS_ECR_REPOSITORY_VOTE }}:latest
+
+      - name: Build and Push Worker Docker image to AWS ECR
+        run: |
+          docker build -t ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/${{ secrets.AWS_ECR_REPOSITORY_WORKER }}:latest ./worker
+          docker push ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/${{ secrets.AWS_ECR_REPOSITORY_WORKER }}:latest
+
+  # Job for Creating the EKS Cluster with Terraform
+  terraform_setup:
+    name: Set up and Create EKS Cluster using Terraform
+    runs-on: ubuntu-latest
+    needs: build_and_push_images
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v1
+        with:
+          terraform_version: 1.5.0
+
+      - name: Terraform Init and Configure AWS Credentials
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+        run: terraform init
+        working-directory: ./AWSEKS
+
+      - name: Run Terraform Plan
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+        run: terraform plan -var "AWS_ACCESS_KEY_ID=${{ secrets.AWS_ACCESS_KEY_ID }}" -var "AWS_SECRET_ACCESS_KEY=${{ secrets.AWS_SECRET_ACCESS_KEY }}" -var "AWS_REGION=${{ secrets.AWS_REGION }}"
+        working-directory: ./AWSEKS
+
+      - name: Terraform Apply (Create EKS Cluster)
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+        run: terraform apply -auto-approve -var "AWS_ACCESS_KEY_ID=${{ secrets.AWS_ACCESS_KEY_ID }}" -var "AWS_SECRET_ACCESS_KEY=${{ secrets.AWS_SECRET_ACCESS_KEY }}" -var "AWS_REGION=${{ secrets.AWS_REGION }}"
+        working-directory: ./AWSEKS
+
+  # Job for Deploying to EKS using Kubernetes Manifests
+  deploy_to_eks:
+    name: Deploy Docker Images to AWS EKS
+    runs-on: ubuntu-latest
+    needs: terraform_setup
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Configure kubectl for EKS
+        run: |
+          aws eks --region ${{ secrets.AWS_REGION }} update-kubeconfig --name bdiplus
+
+      # Deploy 'result' to EKS
+      - name: Deploy result service to EKS
+        run: kubectl apply -f ./k8s-specifications/result.yaml
+
+      # Deploy 'vote' to EKS
+      - name: Deploy vote service to EKS
+        run: kubectl apply -f ./k8s-specifications/vote.yaml
+
+      # Deploy 'worker' to EKS
+      - name: Deploy worker service to EKS
+        run: kubectl apply -f ./k8s-specifications/worker.yaml
+
+      # Deploy 'redis' to EKS
+      - name: Deploy redis service to EKS
+        run: kubectl apply -f ./k8s-specifications/redis.yaml
+
+      # Deploy 'db' to EKS
+      - name: Deploy vote db to EKS
+        run: kubectl apply -f ./k8s-specifications/db.yaml

@@ -1,0 +1,53 @@
+# this file is meant for Docker Swarm stacks only
+# trying it in compose will fail because of multiple replicas trying to bind to the same port
+# Swarm currently does not support Compose Spec, so we'll pin to the older version 3.9
+
+version: "3.9"
+
+services:
+
+  redis:
+    image: redis:alpine
+    networks:
+      - frontend
+
+  db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: "postgres"
+      POSTGRES_PASSWORD: "postgres"
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    networks:
+      - backend
+
+  vote:
+    image: 440744256620.dkr.ecr.us-east-2.amazonaws.com/voting-app-vote:latest
+    ports:
+      - 8080:80
+    networks:
+      - frontend
+    deploy:
+      replicas: 2
+
+  result:
+    image: 440744256620.dkr.ecr.us-east-2.amazonaws.com/voting-app-result:latest
+    ports:
+      - 8081:80
+    networks:
+      - backend
+
+  worker:
+    image: 440744256620.dkr.ecr.us-east-2.amazonaws.com/voting-app-worker:latest
+    networks:
+      - frontend
+      - backend
+    deploy:
+      replicas: 2
+
+networks:
+  frontend:
+  backend:
+
+volumes:
+  db-data:
